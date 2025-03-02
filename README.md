@@ -12,9 +12,13 @@ This kind of method can solve the question that even though we don't have a sing
 In this project, we will show 5 .py files:
 
 data_loader.py: representes how to divide datasets into many small parts.
+
 model.py: the file consists of the untrained model.
+
 server.py: the file that constructs a server.
+
 client.py: the file constructs clients.
+
 local_training.py: the file provides a code that can train locally, where is a common way to train model, or we say 'non federal way'.
 
 The main idea and more details will be expained in .py files.
