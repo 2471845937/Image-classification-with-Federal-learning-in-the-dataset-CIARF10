@@ -44,4 +44,5 @@ flwr:1.11.1
 
 You can direcly use my setting or try your won compatible combination.
 
+We can also use non-federal learning to train this model in only one device, the detial code we will show in local_training.py file
 
