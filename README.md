@@ -40,4 +40,8 @@ cuNDD:8200
 
 pytorch:1.10.1+cu113
 
+flwr:1.11.1
+
 You can direcly use my setting or try your won compatible combination.
+
+
