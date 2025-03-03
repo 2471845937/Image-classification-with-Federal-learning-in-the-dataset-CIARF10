@@ -30,3 +30,14 @@ And to run a client, you need to use the code below in your terminal:
 `python client.py --client_id 0`
 And you can replace the client id number by order to activate more clients.
 
+The environment setting we use here:
+
+python:3.8
+
+cuda toolkit:11.3
+
+cuNDD:8200
+
+pytorch:1.10.1+cu113
+
+You can direcly use my setting or try your won compatible combination.
