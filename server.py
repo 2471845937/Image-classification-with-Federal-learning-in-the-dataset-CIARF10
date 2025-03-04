@@ -12,7 +12,9 @@ class FederatedServer:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model.to(self.device)
         self.global_round = 0
-        self.accuracies = []
+        self.accuracies = []  # 测试准确率
+        self.train_accuracies = []  # 训练准确率（新增）
+        self.train_losses = []  # 训练损失（新增）
 
         # Get test loader
         _, test_data = get_datasets(0)
@@ -32,7 +34,6 @@ class FederatedServer:
 
         print(f"Server listening on port 12345...")
 
-        # 建立所有客户端的长连接
         client_sockets = []
         for _ in range(num_clients):
             client_socket, addr = server_socket.accept()
@@ -41,15 +42,14 @@ class FederatedServer:
 
         for round_num in range(num_rounds):
             self.global_round = round_num + 1
-            client_params = []
+            client_updates = []
+            train_acc_list = []
+            train_loss_list = []
 
-            # 向所有客户端发送训练指令和全局模型
+            # 发送训练指令和全局模型
             for sock in client_sockets:
                 try:
-                    # 发送训练指令
                     sock.sendall(b'TRAIN')
-
-                    # 发送全局模型
                     model_data = pickle.dumps(self.model.state_dict())
                     sock.sendall(len(model_data).to_bytes(4, 'big'))
                     sock.sendall(model_data)
@@ -57,15 +57,13 @@ class FederatedServer:
                     print("Client connection lost!")
                     continue
 
-            # 接收所有客户端的参数更新
+            # 接收客户端更新
             for sock in client_sockets:
                 try:
-                    # 接收参数数据长度
                     data_len = int.from_bytes(sock.recv(4), 'big')
                     if not data_len:
                         continue
 
-                    # 接收完整数据
                     data = b''
                     while len(data) < data_len:
                         packet = sock.recv(data_len - len(data))
@@ -74,7 +72,10 @@ class FederatedServer:
                         data += packet
 
                     if len(data) == data_len:
-                        client_params.append(pickle.loads(data))
+                        client_data = pickle.loads(data)
+                        client_updates.append(client_data['params'])
+                        train_acc_list.append(client_data['train_acc'])
+                        train_loss_list.append(client_data['train_loss'])
                     else:
                         print("Received incomplete data!")
                 except ConnectionResetError:
@@ -82,13 +83,22 @@ class FederatedServer:
                     continue
 
             # 聚合参数
-            if client_params:
-                self.aggregate(client_params)
+            if client_updates:
+                self.aggregate(client_updates)
+
+            # 计算平均训练指标
+            avg_train_acc = sum(train_acc_list) / len(train_acc_list) if train_acc_list else 0
+            avg_train_loss = sum(train_loss_list) / len(train_loss_list) if train_loss_list else 0
+            self.train_accuracies.append(avg_train_acc)
+            self.train_losses.append(avg_train_loss)
 
             # 测试全局模型
             test_loss, test_acc = test(self.model, self.test_loader, self.device)
             self.accuracies.append(test_acc)
+
+            # 打印本轮结果
             print(f"\nRound {self.global_round} Results:")
+            print(f"Train Loss: {avg_train_loss:.4f} | Train Accuracy: {avg_train_acc:.2f}%")
             print(f"Test Loss: {test_loss:.4f} | Test Accuracy: {test_acc:.2f}%")
 
         # 发送终止指令
@@ -99,14 +109,37 @@ class FederatedServer:
             except:
                 pass
 
-        # 绘制准确率曲线
+        # 绘制三个图表
+        rounds = range(1, num_rounds + 1)
+
+        # 测试准确率
         plt.figure(figsize=(10, 6))
-        plt.plot(range(1, num_rounds + 1), self.accuracies, marker='o')
+        plt.plot(rounds, self.accuracies, marker='o')
         plt.xlabel('Communication Round')
-        plt.ylabel('Test Accuracy (%)')
-        plt.title('Federated Learning Performance')
+        plt.ylabel('Accuracy (%)')
+        plt.title('Test Accuracy')
         plt.grid(True)
-        plt.savefig('fl_accuracy_curve.png')
+        plt.savefig('fl_test_accuracy.png')
+        plt.close()
+
+        # 训练准确率
+        plt.figure(figsize=(10, 6))
+        plt.plot(rounds, self.train_accuracies, marker='o', color='orange')
+        plt.xlabel('Communication Round')
+        plt.ylabel('Accuracy (%)')
+        plt.title('Train Accuracy')
+        plt.grid(True)
+        plt.savefig('fl_train_accuracy.png')
+        plt.close()
+
+        # 训练损失
+        plt.figure(figsize=(10, 6))
+        plt.plot(rounds, self.train_losses, marker='o', color='red')
+        plt.xlabel('Communication Round')
+        plt.ylabel('Loss')
+        plt.title('Train Loss')
+        plt.grid(True)
+        plt.savefig('fl_train_loss.png')
         plt.close()
 
         server_socket.close()
