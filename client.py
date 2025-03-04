@@ -1,121 +1,102 @@
+import socket
+import pickle
 import argparse
-import flwr as fl
 import torch
-import numpy as np
 from torch import nn, optim
-from torch.utils.data import DataLoader
-from data_loader import non_iid_split, get_testloader
-from model import MobileNetV2
+from data_loader import get_dataloaders
+from model import create_model
 
-torch.backends.cudnn.benchmark=True
-class FlowerClient(fl.client.NumPyClient):
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+class FederatedClient:
     def __init__(self, client_id):
         self.client_id = client_id
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.train_loader, self.test_loader = get_dataloaders(client_id)
+        self.model = create_model().to(device)
 
-        # 初始化模型
-        self.model = MobileNetV2().to(self.device)
-
-        # 加载数据
-        client_datasets = non_iid_split(num_clients=4)
-        self.trainloader = DataLoader(
-            client_datasets[client_id],
-            batch_size=32,
-            shuffle=True,
-            drop_last=True
-        )
-        self.testloader = get_testloader()
-
-    def get_parameters(self, config):
-        """返回模型参数"""
-        return [val.cpu().detach().numpy() for _, val in self.model.state_dict().items()]
-
-    def set_parameters(self, parameters):
-        """设置模型参数"""
-        params_dict = zip(self.model.state_dict().keys(), parameters)
-        state_dict = {k: torch.from_numpy(val).to(self.device) for k, val in params_dict}
-        self.model.load_state_dict(state_dict)
-
-    def fit(self, parameters, config):
-        """本地训练"""
-        self.set_parameters(parameters)
-
-        optimizer = optim.SGD(self.model.parameters(), lr=0.01)
+    def local_train(self, global_params, local_epochs=3):
+        self.model.load_state_dict(global_params)
+        optimizer = optim.Adam(self.model.parameters(), lr=0.001, weight_decay=1e-4)
         criterion = nn.CrossEntropyLoss()
-        mu = config.get("mu", 0.1)
-
-        total_loss, total_correct, total_samples = 0.0, 0, 0
 
         self.model.train()
-        for epoch in range(3):
-            for batch_idx, (x, y) in enumerate(self.trainloader):
-                x, y = x.to(self.device), y.to(self.device)
+        for epoch in range(local_epochs):
+            total_loss = 0
+            correct = 0
+            for data, target in self.train_loader:
+                data, target = data.to(device), target.to(device)
                 optimizer.zero_grad()
-                outputs = self.model(x)
-                loss = criterion(outputs, y)
-
-                # FedProx 正则项
-                proximal_term = sum(p.norm().pow(2) for p in self.model.parameters())
-                loss += mu / 2 * proximal_term
-
+                output = self.model(data)
+                loss = criterion(output, target)
                 loss.backward()
                 optimizer.step()
 
-                # 累计指标
-                total_loss += loss.item() * y.size(0)
-                pred = torch.argmax(outputs, dim=1)
-                total_correct += (pred == y).sum().item()
-                total_samples += y.size(0)
+                total_loss += loss.item()
+                pred = output.argmax(dim=1, keepdim=True)
+                correct += pred.eq(target.view_as(pred)).sum().item()
 
-                # 打印每个 batch 的进度（可选）
-                print(
-                    f"Client {self.client_id}: Epoch {epoch + 1}/{3}, Batch {batch_idx + 1}/{len(self.trainloader)}, Loss: {loss.item():.4f}")
+            train_loss = total_loss / len(self.train_loader)
+            train_acc = 100. * correct / len(self.train_loader.dataset)
+            print(f"Client {self.client_id} - Epoch {epoch + 1}: "
+                  f"Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.2f}%")
 
-            # 打印每个 epoch 的训练结果
-            epoch_loss = total_loss / total_samples
-            epoch_accuracy = total_correct / total_samples
-            print(
-                f"Client {self.client_id}: Epoch {epoch + 1}/{3} completed. Loss: {epoch_loss:.4f}, Accuracy: {epoch_accuracy:.4f}")
+        return self.model.state_dict()
 
-        avg_loss = total_loss / total_samples
-        avg_accuracy = total_correct / total_samples
+    def run(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.connect(('192.168.1.203', 12345))
 
-        return self.get_parameters(config), len(self.trainloader.dataset), {"loss": avg_loss, "accuracy": avg_accuracy}
+        while True:
+            # 等待服务器指令
+            try:
+                command = sock.recv(5)
+                if not command:
+                    continue
 
-    def evaluate(self, parameters, config):
-        """本地评估"""
-        self.set_parameters(parameters)
-        self.model.eval()
+                command = command.decode()
+                if command == 'EXIT':
+                    break
+                elif command != 'TRAIN':
+                    continue
 
-        test_loss, correct, total = 0.0, 0, 0
-        criterion = nn.CrossEntropyLoss()
+                # 接收全局模型
+                data_len = int.from_bytes(sock.recv(4), 'big')
+                data = b''
+                while len(data) < data_len:
+                    packet = sock.recv(data_len - len(data))
+                    if not packet:
+                        break
+                    data += packet
 
-        with torch.no_grad():
-            for batch_idx, (x, y) in enumerate(self.testloader):
-                x, y = x.to(self.device), y.to(self.device)
-                outputs = self.model(x)
-                loss = criterion(outputs, y)
-                test_loss += loss.item() * y.size(0)
-                pred = torch.argmax(outputs, dim=1)
-                correct += (pred == y).sum().item()
-                total += y.size(0)
+                if len(data) != data_len:
+                    print("Received incomplete model parameters!")
+                    continue
 
-        accuracy = correct / total
-        test_loss /= total
+                global_params = pickle.loads(data)
 
-        # 打印评估结果
-        print(f"Client {self.client_id}: Evaluation completed. Loss: {test_loss:.4f}, Accuracy: {accuracy:.4f}")
+                # 本地训练
+                updated_params = self.local_train(global_params)
 
-        return float(test_loss), total, {"accuracy": accuracy}
+                # 发送更新参数
+                data = pickle.dumps(updated_params)
+                sock.sendall(len(data).to_bytes(4, 'big'))
+                sock.sendall(data)
+
+            except ConnectionResetError:
+                print("Connection to server lost!")
+                break
+            except KeyboardInterrupt:
+                break
+
+        sock.close()
+        print(f"Client {self.client_id} exiting...")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--client_id", type=int, required=True)
+    parser.add_argument('--client_id', type=int, required=True)
     args = parser.parse_args()
 
-    client = FlowerClient(args.client_id)
-    fl.client.start_client(
-        server_address="192.168.1.196:8080",  # 替换为服务器实际IP
-        client=client.to_client()
-    )
+    client = FederatedClient(args.client_id)
+    client.run()
