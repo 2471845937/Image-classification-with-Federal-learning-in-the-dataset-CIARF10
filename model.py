@@ -1,13 +1,28 @@
-from torchvision.models import mobilenet_v2
+import torch
 from torch import nn
-class MobileNetV2(nn.Module):
-    def __init__(self):
-        super().__init__()
-        # 修改首层卷积适配32x32输入
-        self.model = mobilenet_v2(pretrained=False)
-        self.model.features[0][0] = nn.Conv2d(3, 32, kernel_size=3, stride=1, padding=1, bias=False)
-        # 修改分类层
-        self.model.classifier[1] = nn.Linear(1280, 10)
+from torchvision.models import mobilenet_v2
 
-    def forward(self, x):
-        return self.model(x)
+
+def create_model():
+    model = mobilenet_v2(pretrained=True)
+    model.classifier[1] = nn.Linear(model.last_channel, 10)  # CIFAR10 has 10 classes
+    return model
+
+
+def test(model, test_loader, device):
+    model.eval()
+    total_loss = 0
+    correct = 0
+    criterion = nn.CrossEntropyLoss()
+
+    with torch.no_grad():
+        for data, target in test_loader:
+            data, target = data.to(device), target.to(device)
+            output = model(data)
+            total_loss += criterion(output, target).item()
+            pred = output.argmax(dim=1, keepdim=True)
+            correct += pred.eq(target.view_as(pred)).sum().item()
+
+    accuracy = 100. * correct / len(test_loader.dataset)
+    avg_loss = total_loss / len(test_loader)
+    return avg_loss, accuracy
