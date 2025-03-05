@@ -4,6 +4,8 @@ import torch.optim as optim
 import torchvision
 import torchvision.transforms as transforms
 from torch.optim.lr_scheduler import CosineAnnealingLR
+import matplotlib.pyplot as plt
+import time
 
 # 超参数配置
 BATCH_SIZE = 128
@@ -44,14 +46,8 @@ class MobileNetV2_CIFAR10(nn.Module):
     def __init__(self, num_classes=10):
         super().__init__()
         self.model = torchvision.models.mobilenet_v2(pretrained=False)
-
-        # 调整第一层卷积适应32x32输入
         self.model.features[0][0] = nn.Conv2d(3, 32, kernel_size=3, stride=1, padding=1, bias=False)
-
-        # 移除最后的分类层
         self.model.classifier = nn.Identity()
-
-        # 自定义分类头
         self.classifier = nn.Sequential(
             nn.AdaptiveAvgPool2d((1, 1)),
             nn.Flatten(),
@@ -64,48 +60,36 @@ class MobileNetV2_CIFAR10(nn.Module):
         return x
 
 
-# 初始化模型、优化器、损失函数
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model = MobileNetV2_CIFAR10().to(device)
-optimizer = optim.SGD(model.parameters(), lr=LEARNING_RATE,
-                      momentum=MOMENTUM, weight_decay=WEIGHT_DECAY)
-scheduler = CosineAnnealingLR(optimizer, T_max=EPOCHS)
-criterion = nn.CrossEntropyLoss()
-
-
-# 训练函数
-def train():
+def train_one_epoch(model, train_loader, optimizer, criterion, device):
     model.train()
-    for epoch in range(EPOCHS):
-        running_loss = 0.0
-        correct = 0
-        total = 0
+    running_loss = 0.0
+    correct = 0
+    total = 0
 
-        for inputs, labels in train_loader:
-            inputs, labels = inputs.to(device), labels.to(device)
+    for inputs, labels in train_loader:
+        inputs, labels = inputs.to(device), labels.to(device)
 
-            optimizer.zero_grad()
-            outputs = model(inputs)
-            loss = criterion(outputs, labels)
-            loss.backward()
-            optimizer.step()
+        optimizer.zero_grad()
+        outputs = model(inputs)
+        loss = criterion(outputs, labels)
+        loss.backward()
+        optimizer.step()
 
-            running_loss += loss.item()
-            _, predicted = outputs.max(1)
-            total += labels.size(0)
-            correct += predicted.eq(labels).sum().item()
+        running_loss += loss.item()
+        _, predicted = outputs.max(1)
+        total += labels.size(0)
+        correct += predicted.eq(labels).sum().item()
 
-        scheduler.step()
-        train_acc = 100. * correct / total
-        print(f"Epoch [{epoch + 1}/{EPOCHS}] Loss: {running_loss / len(train_loader):.3f} "
-              f"Train Acc: {train_acc:.2f}%")
+    epoch_loss = running_loss / len(train_loader)
+    epoch_acc = 100.0 * correct / total
+    return epoch_loss, epoch_acc
 
 
-# 测试函数
-def test():
+def test(model, test_loader, device):
     model.eval()
     correct = 0
     total = 0
+
     with torch.no_grad():
         for inputs, labels in test_loader:
             inputs, labels = inputs.to(device), labels.to(device)
@@ -114,10 +98,72 @@ def test():
             total += labels.size(0)
             correct += predicted.eq(labels).sum().item()
 
-    test_acc = 100. * correct / total
-    print(f"Test Accuracy: {test_acc:.2f}%")
+    test_acc = 100.0 * correct / total
+    return test_acc
+
+
+def plot_metrics(train_losses, train_accs, test_accs):
+    plt.figure(figsize=(15, 5))
+
+    plt.subplot(1, 3, 1)
+    plt.plot(train_losses, label='Training Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend()
+
+    plt.subplot(1, 3, 2)
+    plt.plot(train_accs, label='Training Accuracy')
+    plt.xlabel('Epoch')
+    plt.ylabel('Accuracy')
+    plt.legend()
+
+    plt.subplot(1, 3, 3)
+    plt.plot(test_accs, label='Test Accuracy')
+    plt.xlabel('Epoch')
+    plt.ylabel('Accuracy')
+    plt.legend()
+
+    plt.tight_layout()
+    plt.savefig('training_metrics.png')
+    plt.show()
 
 
 if __name__ == '__main__':
-    train()
-    test()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = MobileNetV2_CIFAR10().to(device)
+    optimizer = optim.SGD(model.parameters(), lr=LEARNING_RATE,
+                          momentum=MOMENTUM, weight_decay=WEIGHT_DECAY)
+    scheduler = CosineAnnealingLR(optimizer, T_max=EPOCHS)
+    criterion = nn.CrossEntropyLoss()
+
+    train_losses = []
+    train_accs = []
+    test_accs = []
+    best_acc = 0.0
+    start_time = time.time()
+
+    for epoch in range(EPOCHS):
+        train_loss, train_acc = train_one_epoch(model, train_loader, optimizer, criterion, device)
+        test_acc = test(model, test_loader, device)
+        scheduler.step()
+
+        train_losses.append(train_loss)
+        train_accs.append(train_acc)
+        test_accs.append(test_acc)
+
+        # 保存最佳模型
+        if test_acc > best_acc:
+            best_acc = test_acc
+            torch.save(model.state_dict(), 'best_model.pth')
+
+        print(f"Epoch [{epoch + 1}/{EPOCHS}] "
+              f"Train Loss: {train_loss:.3f} | "
+              f"Train Acc: {train_acc:.2f}% | "
+              f"Test Acc: {test_acc:.2f}%")
+
+    total_time = time.time() - start_time
+    print(f"\nTotal training time: {total_time // 3600:.0f}h {(total_time % 3600) // 60:.0f}m {total_time % 60:.2f}s")
+    print(f"Best Test Accuracy: {best_acc:.2f}%")
+
+    # 绘制并保存图表
+    plot_metrics(train_losses, train_accs, test_accs)
