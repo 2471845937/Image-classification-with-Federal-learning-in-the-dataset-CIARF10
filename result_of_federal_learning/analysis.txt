@@ -1,0 +1,1 @@
+Based on a 90% accuracy rate，30 rounds, each round lasting 5 epochs, achieved 90% accuracy in just the third round
