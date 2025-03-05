@@ -1,4 +1,4 @@
-# Image-classification-with-Federal-learning-in-the-dataset-CIARF10
+# Image-classification-with-Federal-learning-in-the-dataset-CIARF10-based-on-federal-learning
 In this project, we try to figure out how to construct and running a federal learning model in different devices.
 
 From the name of federal learning, you can intuitively understand that this kind of method is in the way of learning from the cooperation of many devices.
